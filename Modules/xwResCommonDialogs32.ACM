@@ -1,9 +1,23 @@
 Option Explicit
 Option Compare Text
 
+
+
+#If VBA7 Then
+Private Type BROWSEINFO
+    hwndOwner As LongPtr
+    pidlRoot As LongPtr
+    pszDisplayName As String
+    lpszTitle As String
+    ulFlags As Long
+    lpfnCallback As LongPtr
+    lParam As LongPtr
+    iImage As Long
+End Type
+#Else
 Private Type shellBrowseInfo32
     hwndOwner      As Long
-    pIDLRoot       As Long
+    pidlRoot       As Long
     pszDisplayName As Long
     lpszTitle      As String
     ulFlags        As Long
@@ -11,15 +25,27 @@ Private Type shellBrowseInfo32
     lParam         As Long
     iImage         As Long
 End Type
+#End If
+
+
 
 Public Const MAXDWORD = &HFFFF
 
+#If VBA7 Then
+Private Declare PtrSafe Function GetShortPathName Lib "kernel32" Alias "GetShortPathNameA" (ByVal lpszLongPath As String, ByVal lpszShortPath As String, ByVal cchBuffer As Long) As Long
+Private Declare PtrSafe Sub CoTaskMemFree Lib "ole32.dll" (ByVal hMem As LongPtr)
+Private Declare PtrSafe Function SHBrowseForFolder Lib "shell32" Alias "SHBrowseForFolderA" (ByRef lpbi As BROWSEINFO) As LongPtr
+Private Declare PtrSafe Function SHGetPathFromIDList Lib "shell32" Alias "SHGetPathFromIDListA" (ByVal pidList As LongPtr, ByVal lpBuffer As String) As LongPtr
+Private Declare PtrSafe Function SendMessage Lib "user32" Alias "SendMessageA" (ByVal hwnd As LongPtr, ByVal wMsg As Long, ByVal wParam As LongPtr, ByVal lParam As Any) As LongPtr
+Private Declare PtrSafe Function SHGetPathFromIDListB Lib "shell32" (ByVal pidList As LongPtr, ByVal lpBuffer As String) As LongPtr
+#Else
 Private Declare Function GetShortPathName32 Lib "kernel32" Alias "GetShortPathNameA" (ByVal lpszLongPath As String, ByVal lpszShortPath As String, ByVal cchBuffer As Long) As Long
 Private Declare Sub CoTaskMemFree32 Lib "ole32.dll" Alias "CoTaskMemFree" (ByVal hMem As Long)
 Private Declare Function SHBrowseForFolder32 Lib "shell32" Alias "SHBrowseForFolder" (lpbi As shellBrowseInfo32) As Long
 Private Declare Function SHGetPathFromIDList32 Lib "shell32" Alias "SHGetPathFromIDList" (ByVal pidList As Long, ByVal lpBuffer As String) As Long
 Private Declare Function SendMessage Lib "user32" Alias "SendMessageA" (ByVal hwnd As Long, ByVal wMsg As Long, ByVal wParam As Long, ByVal lParam As String) As Long
 Private Declare Function SHGetPathFromIDList Lib "shell32" (ByVal pidList As Long, ByVal lpBuffer As String) As Long
+#End If
 
 Private Const OFN_READONLY = &H1
 Private Const OFN_OVERWRITEPROMPT = &H2
@@ -68,6 +94,75 @@ Private Const BFFM_SETSELECTION = (WM_USER + 102)
 
 Dim mstrCurrentDirectory As String
 
+
+
+#If VBA7 Then
+'************************************************
+' Browse Folder Dialog
+'
+' Opens a Browse for Folder Dialog
+'
+' @version 1.00
+' @param  Long    A handle to the calling form
+' @param  String  The title of the dialog
+' @param  Boolean Flag to set if the path should be returned back in short form (abcde~1)
+' @param  String  Optional param to set the starting path when selecting a folder
+' @return String  The selected folder
+'************************************************
+Function BrowseFolderDialog(ByVal hWndFrm As Long, ByVal strTitle As String, ByVal blnShortPath As Boolean, Optional ByVal strStartPath As String = vbNullString) As String
+  
+  Dim lngNullTest As Long
+  Dim lngIDList As LongPtr, lngRes As LongPtr
+  Dim strFolder As String, strShortFolder As String
+  Dim shBI As BROWSEINFO
+
+  On Error GoTo BrowseFolderDialog_Err:
+
+  If LenB(strStartPath) <> 0 Then
+    mstrCurrentDirectory = strStartPath
+  End If
+
+  With shBI
+    .hwndOwner = hWndFrm
+    .lpszTitle = strTitle
+    .ulFlags = BIF_RETURNONLYFSDIRS
+    .lpfnCallback = GetAddressofFunction(AddressOf BrowseCallbackProc)
+  End With
+
+  lngIDList = SHBrowseForFolder(shBI)
+  If lngIDList Then
+    strFolder = String$(MAX_PATH, 0)
+    lngRes = SHGetPathFromIDListB(lngIDList, strFolder)
+    
+    
+    Call CoTaskMemFree(lngIDList)
+    lngNullTest = InStr(strFolder, vbNullChar)
+    If lngNullTest <> 0 Then
+      strFolder = Left$(strFolder, lngNullTest - 1)
+      If blnShortPath Then
+        strShortFolder = Space$(260)
+        lngRes = GetShortPathName(strFolder, strShortFolder, 260)
+        If lngRes <> 0 Then
+          strFolder = strShortFolder
+        Else
+          strFolder = vbNullString
+        End If
+      End If
+    End If
+  End If
+
+  BrowseFolderDialog = strFolder
+
+BrowseFolderDialog_Exit:
+  Exit Function
+
+BrowseFolderDialog_Err:
+  BrowseFolderDialog = vbNullString
+  MsgBox "Error No: " & Err & vbNullString & "Description: " & Err.Description, vbExclamation + vbOKOnly, "BrowseFolderDialog"
+  Resume BrowseFolderDialog_Exit
+
+End Function
+#Else
 '************************************************
 ' Browse Folder Dialog
 '
@@ -130,7 +225,35 @@ BrowseFolderDialog_Err:
   Resume BrowseFolderDialog_Exit
 
 End Function
+#End If
 
+
+
+#If VBA7 Then
+Private Function BrowseCallbackProc(ByVal hwnd As LongPtr, ByVal uMsg As Long, ByVal lp As Long, ByVal pData As Long) As LongPtr
+  Dim lngRet As LongPtr
+  Dim strBuffer As String
+
+  On Error Resume Next
+  
+  Select Case uMsg
+    Case BFFM_INITIALIZED
+      Call SendMessage(hwnd, BFFM_SETSELECTION, 1, mstrCurrentDirectory)
+
+    Case BFFM_SELCHANGED
+      strBuffer = Space(MAX_PATH)
+
+      lngRet = SHGetPathFromIDList(lp, strBuffer)
+      If lngRet = 1 Then
+        Call SendMessage(hwnd, BFFM_SETSTATUSTEXT, 0, strBuffer)
+      End If
+
+  End Select
+
+  BrowseCallbackProc = 0
+
+End Function
+#Else
 Private Function BrowseCallbackProc(ByVal hwnd As Long, ByVal uMsg As Long, ByVal lp As Long, ByVal pData As Long) As Long
   Dim lngRet As Long
   Dim strBuffer As String
@@ -154,8 +277,23 @@ Private Function BrowseCallbackProc(ByVal hwnd As Long, ByVal uMsg As Long, ByVa
   BrowseCallbackProc = 0
 
 End Function
+#End If
 
+
+
+
+
+
+
+
+#If VBA7 Then
+' This function allows you to assign a function pointer to a vaiable.
+Private Function GetAddressofFunction(add As LongPtr) As LongPtr
+  GetAddressofFunction = add
+End Function
+#Else
 ' This function allows you to assign a function pointer to a vaiable.
 Private Function GetAddressofFunction(add As Long) As Long
   GetAddressofFunction = add
 End Function
+#End If

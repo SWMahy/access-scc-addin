@@ -8,6 +8,28 @@ Private Type SECURITY_ATTRIBUTES
   bInheritHandle                   As Long
 End Type
 
+#If VBA7 Then
+Private Type STARTUPINFO
+  cb                               As Long
+  lpReserved                       As String
+  lpDesktop                        As String
+  lpTitle                          As String
+  dwX                              As Long
+  dwY                              As Long
+  dwXSize                          As Long
+  dwYSize                          As Long
+  dwXCountChars                    As Long
+  dwYCountChars                    As Long
+  dwFillAttribute                  As Long
+  dwFlags                          As Long
+  wShowWindow                      As Integer
+  cbReserved2                      As Integer
+  lpReserved2                      As Long
+  hStdInput                        As Long
+  hStdOutput                       As LongPtr
+  hStdError                        As LongPtr
+End Type
+#Else
 Private Type STARTUPINFO
   cb                               As Long
   lpReserved                       As String
@@ -28,6 +50,9 @@ Private Type STARTUPINFO
   hStdOutput                       As Long
   hStdError                        As Long
 End Type
+#End If
+
+
 
 Private Type PROCESS_INFORMATION
   hProcess                         As Long
@@ -68,10 +93,24 @@ Private Const STARTF_USESHOWWINDOW = &H1
 Private Const STARTF_USESTDHANDLES = &H100
 
 ' API Declarations
+#If VBA7 Then
+Private Declare PtrSafe Function CreatePipe Lib "kernel32" (ByRef phReadPipe As LongPtr, ByRef phWritePipe As LongPtr, lpPipeAttributes As Any, ByVal nSize As Long) As LongPtr
+Private Declare PtrSafe Function ReadFile Lib "kernel32" (ByVal hFile As LongPtr, lpBuffer As Any, ByVal nNumberOfBytesToRead As LongPtr, lpNumberOfBytesRead As LongPtr, lpOverlapped As Any) As LongPtr
+' There are two declarations here, as they are used in different ways by different functions in this module
+Private Declare PtrSafe Function CreateProcess Lib "kernel32" Alias "CreateProcessA" (ByVal lpApplicationName As String, ByVal lpCommandLine As String, _
+    lpProcessAttributes As Any, lpThreadAttributes As Any, ByVal bInheritHandles As Long, _
+    ByVal dwCreationFlags As Long, lpEnvironment As Any, ByVal lpCurrentDriectory As String, lpStartupInfo As STARTUPINFO, _
+    lpProcessInformation As PROCESS_INFORMATION) As LongPtr
+Private Declare PtrSafe Function CreateProcessA Lib "kernel32" (ByVal lpApplicationName As String, ByVal lpCommandLine As String, _
+    ByVal lpProcessAttributes As LongPtr, ByVal lpThreadAttributes As LongPtr, ByVal bInheritHandles As Long, _
+    ByVal dwCreationFlags As Long, ByVal lpEnvironment As LongPtr, ByVal lpCurrentDirectory As LongPtr, lpStartupInfo As STARTUPINFO, _
+    lpProcessInformation As PROCESS_INFORMATION) As LongPtr
+Private Declare PtrSafe Function WaitForSingleObject Lib "kernel32" (ByVal hHandle As LongPtr, ByVal dwMilliseconds As Long) As LongPtr
+Private Declare PtrSafe Function CloseHandle Lib "kernel32" (ByVal hObject As LongPtr) As LongPtr
+Private Declare PtrSafe Function GetExitCodeProcess Lib "kernel32" (ByVal hProcess As LongPtr, lpExitCode As Long) As LongPtr
+#Else
 Private Declare Function CreatePipe Lib "kernel32" (phReadPipe As Long, phWritePipe As Long, lpPipeAttributes As Any, ByVal nSize As Long) As Long
 Private Declare Function ReadFile Lib "kernel32" (ByVal hFile As Long, lpBuffer As Any, ByVal nNumberOfBytesToRead As Long, lpNumberOfBytesRead As Long, lpOverlapped As Any) As Long
-
-' There are two declarations here, as they are used in different ways by different functions in this module
 Private Declare Function CreateProcess Lib "kernel32" Alias "CreateProcessA" (ByVal lpApplicationName As String, ByVal lpCommandLine As String, _
     lpProcessAttributes As Any, lpThreadAttributes As Any, ByVal bInheritHandles As Long, _
     ByVal dwCreationFlags As Long, lpEnvironment As Any, ByVal lpCurrentDriectory As String, lpStartupInfo As STARTUPINFO, _
@@ -83,7 +122,11 @@ Private Declare Function CreateProcessA Lib "kernel32" (ByVal lpApplicationName 
 Private Declare Function WaitForSingleObject Lib "kernel32" (ByVal hHandle As Long, ByVal dwMilliseconds As Long) As Long
 Private Declare Function CloseHandle Lib "kernel32" (ByVal hObject As Long) As Long
 Private Declare Function GetExitCodeProcess Lib "kernel32" (ByVal hProcess As Long, lpExitCode As Long) As Long
+#End If
 
+
+
+#If VBA7 Then
 '************************************************
 ' Exec And Capture
 '
@@ -100,7 +143,72 @@ Private Declare Function GetExitCodeProcess Lib "kernel32" (ByVal hProcess As Lo
 '************************************************
 Public Function ExecAndCapture(ByVal strCmdLine As String, Optional ByVal strStartInFolder As String = vbNullString) As String
   Const BUFSIZE As Long = 1024 * 10
-  Dim hPipeRead As Long, hPipeWrite As Long, lBytesRead As Long
+  
+  Dim hPipeRead As LongPtr
+  Dim hPipeWrite As LongPtr
+  Dim lBytesRead As LongPtr
+
+  Dim sa                As SECURITY_ATTRIBUTES
+  Dim si                As STARTUPINFO
+  Dim pi                As PROCESS_INFORMATION
+  Dim baOutput(BUFSIZE) As Byte
+  Dim strOutput         As String
+    
+  With sa
+    .nLength = Len(sa)
+    .bInheritHandle = 1    ' get inheritable pipe handles
+  End With
+    
+  If CreatePipe(hPipeRead, hPipeWrite, sa, 0) = 0 Then Exit Function
+
+  With si
+    .cb = Len(si)
+    .dwFlags = STARTF_USESHOWWINDOW Or STARTF_USESTDHANDLES
+    .wShowWindow = SW_HIDE
+    .hStdOutput = hPipeWrite
+    .hStdError = hPipeWrite
+  End With
+    
+  If CreateProcess(vbNullString, strCmdLine, ByVal 0&, ByVal 0&, 1, 0&, ByVal 0&, strStartInFolder, si, pi) Then
+    Call CloseHandle(hPipeWrite)
+    Call CloseHandle(pi.hThread)
+    hPipeWrite = 0
+    Do
+      DoEvents
+      If ReadFile(hPipeRead, baOutput(0), BUFSIZE, lBytesRead, ByVal 0&) = 0 Then Exit Do
+      strOutput = strOutput & Left$(StrConv(baOutput(), vbUnicode), CLng(lBytesRead))
+    Loop
+    Call CloseHandle(pi.hProcess)
+  End If
+  
+  ' To make sure...
+  Call CloseHandle(hPipeRead)
+  Call CloseHandle(hPipeWrite)
+  ExecAndCapture = strOutput
+End Function
+
+#Else
+'************************************************
+' Exec And Capture
+'
+' Purpose: Excute a console app. & capture output
+'
+' Date: Dec 01, 2004
+' Call this sub to execute and capture a console app.
+' Ex: strText = ExecAndCapture("ping localhost")
+'
+' @author Dipak Auddy <dauddy@gmail.com>
+' @param  String  Cmdline to execute and any required arguments or cmd line switches
+' @param  String  A folder to start the process in
+' @return String  The output of the command as a string
+'************************************************
+Public Function ExecAndCapture(ByVal strCmdLine As String, Optional ByVal strStartInFolder As String = vbNullString) As String
+  Const BUFSIZE As Long = 1024 * 10
+  
+  Dim hPipeRead As Long
+  Dim hPipeWrite As Long
+  Dim lBytesRead As Long
+
   Dim sa                As SECURITY_ATTRIBUTES
   Dim si                As STARTUPINFO
   Dim pi                As PROCESS_INFORMATION
@@ -139,7 +247,71 @@ Public Function ExecAndCapture(ByVal strCmdLine As String, Optional ByVal strSta
   Call CloseHandle(hPipeWrite)
   ExecAndCapture = strOutput
 End Function
+#End If
 
+
+#If VBA7 Then
+'************************************************
+' ShellEx
+'
+' Replaces the standard Shell command so that it waits until
+' the process has finished before returning control back to
+' the calling function
+'
+' See the standard VBA Shell function for more details, as this
+' is a direct replacement.
+'
+' http://support.microsoft.com/kb/129796 How to determine when a shelled process ends
+'
+' Version history:
+' - 1.00 initial version 14/11/2011
+'
+' @author Steve Falla <steve.falla@talkjcs.com>
+' @suggestions
+' @version 1.00
+' @param String  Name of the program to execute and any required arguments or cmd line switches
+' @param Integer The style of window in which the program is to be run
+' @return Double The program's task Id if successful, otherwise it returns zero
+'************************************************
+Public Function ShellEx(PathName As String, Optional WindowStyle As VbAppWinStyle = vbMinimizedFocus) As Double
+  Dim proc As PROCESS_INFORMATION
+  Dim start As STARTUPINFO
+  Dim ret As LongPtr
+
+  ' Initialise the STARTUP structure
+  start.cb = Len(start)
+  Select Case WindowStyle
+    Case vbHide
+      start.dwFlags = STARTF_USESHOWWINDOW
+      start.wShowWindow = SW_HIDE
+    Case vbMaximizedFocus
+      start.dwFlags = STARTF_USESHOWWINDOW
+      start.wShowWindow = SW_SHOWMAXIMIZED
+    Case vbMinimizedFocus
+      start.dwFlags = STARTF_USESHOWWINDOW
+      start.wShowWindow = SW_SHOWMINIMIZED
+    Case vbMinimizedNoFocus
+      start.dwFlags = STARTF_USESHOWWINDOW
+      start.wShowWindow = SW_SHOWMINNOACTIVE
+    Case vbNormalFocus
+      start.dwFlags = STARTF_USESHOWWINDOW
+      start.wShowWindow = SW_NORMAL
+    Case vbNormalNoFocus
+      start.dwFlags = STARTF_USESHOWWINDOW
+      start.wShowWindow = SW_SHOWNOACTIVATE
+    Case vbNormal
+  End Select
+
+  ' Start the shelled application
+  ret = CreateProcessA(vbNullString, PathName, 0&, 0&, 1&, NORMAL_PRIORITY_CLASS, 0&, 0&, start, proc)
+  
+  ' Wait for the shelled application to finish:
+  ret = WaitForSingleObject(proc.hProcess, INFINITE)
+  Call CloseHandle(proc.hThread)
+  Call CloseHandle(proc.hProcess)
+  ShellEx = proc.dwProcessId
+End Function
+#Else
 '************************************************
 ' ShellEx
 '
@@ -200,3 +372,4 @@ Public Function ShellEx(PathName As String, Optional WindowStyle As VbAppWinStyl
   Call CloseHandle(proc.hProcess)
   ShellEx = proc.dwProcessId
 End Function
+#End If

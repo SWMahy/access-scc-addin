@@ -30,12 +30,23 @@ Private Const KEY_WOW64_32KEY = &H200
 
 Private Const REG_OPTION_NON_VOLATILE = 0
 
+#If VBA7 Then
+Declare PtrSafe Function RegCloseKey Lib "advapi32.dll" (ByVal hKey As LongPtr) As Long
+Declare PtrSafe Function RegOpenKeyEx Lib "advapi32.dll" Alias "RegOpenKeyExA" (ByVal hKey As LongPtr, ByVal lpSubKey As String, ByVal ulOptions As Long, ByVal samDesired As LongPtr, phkResult As LongPtr) As Long
+Declare PtrSafe Function RegQueryValueExString Lib "advapi32.dll" Alias "RegQueryValueExA" (ByVal hKey As LongPtr, ByVal lpValueName As String, ByVal lpReserved As LongPtr, lpType As LongPtr, ByVal lpData As String, lpcbData As LongPtr) As Long
+Declare PtrSafe Function RegQueryValueExLong Lib "advapi32.dll" Alias "RegQueryValueExA" (ByVal hKey As LongPtr, ByVal lpValueName As String, ByVal lpReserved As LongPtr, lpType As LongPtr, lpData As LongPtr, lpcbData As LongPtr) As Long
+Declare PtrSafe Function RegQueryValueExNULL Lib "advapi32.dll" Alias "RegQueryValueExA" (ByVal hKey As LongPtr, ByVal lpValueName As String, ByVal lpReserved As LongPtr, lpType As LongPtr, ByVal lpData As LongPtr, lpcbData As LongPtr) As Long
+#Else
 Declare Function RegCloseKey Lib "advapi32.dll" (ByVal hKey As Long) As Long
 Declare Function RegOpenKeyEx Lib "advapi32.dll" Alias "RegOpenKeyExA" (ByVal hKey As Long, ByVal lpSubKey As String, ByVal ulOptions As Long, ByVal samDesired As Long, phkResult As Long) As Long
 Declare Function RegQueryValueExString Lib "advapi32.dll" Alias "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As String, ByVal lpReserved As Long, lpType As Long, ByVal lpData As String, lpcbData As Long) As Long
 Declare Function RegQueryValueExLong Lib "advapi32.dll" Alias "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As String, ByVal lpReserved As Long, lpType As Long, lpData As Long, lpcbData As Long) As Long
 Declare Function RegQueryValueExNULL Lib "advapi32.dll" Alias "RegQueryValueExA" (ByVal hKey As Long, ByVal lpValueName As String, ByVal lpReserved As Long, lpType As Long, ByVal lpData As Long, lpcbData As Long) As Long
-   
+#End If
+
+
+
+#If VBA7 Then
 '************************************************
 ' Query Registry Value
 '
@@ -58,8 +69,9 @@ Declare Function RegQueryValueExNULL Lib "advapi32.dll" Alias "RegQueryValueExA"
 ' @return       String the value of the data at the specified key
 '************************************************
 Public Function xwRegQueryValue(ByVal lPredefinedKey As Long, sKeyName As String, sValueName As String) As String
+    
+    Dim hKey As LongPtr         'handle of opened key
     Dim lRetVal As Long         'result of the API functions
-    Dim hKey As Long            'handle of opened key
     Dim vValue As Variant       'setting of queried value
 
     lRetVal = RegOpenKeyEx(lPredefinedKey, sKeyName, 0, KEY_QUERY_VALUE, hKey)
@@ -78,7 +90,113 @@ Public Function xwRegQueryValue(ByVal lPredefinedKey As Long, sKeyName As String
     
     xwRegQueryValue = vValue
 End Function
+#Else
+'************************************************
+' Query Registry Value
+'
+' Query the value of a registry entry.
+'
+' With this procedure, a call of:
+' QueryValue HKEY_CURENT_USER, "TestKey\SubKey1", "StringValue"
+' will display a message box with the current setting of the "StringValue" value, and assumes that
+' "StringValue" exists in the "TestKey\SubKey1" key.
+'
+' Version history:
+'   - 1.00 initial version
+'
+' @author
+' @version      1.00
+' @suggestions
+' @param        Long a handle to an open registry key. The key must have been opened with the KEY_QUERY_VALUE access right, or it can be one of HKEY_CLASSES_ROOT,HKEY_CURRENT_CONFIG,HKEY_CURRENT_USER,HKEY_LOCAL_MACHINE, HKEY_USERS
+' @param        String the registry name to look for
+' @param        Variant ByRef value of the entry returned after running this function
+' @return       String the value of the data at the specified key
+'************************************************
+Public Function xwRegQueryValue(ByVal lPredefinedKey As Long, sKeyName As String, sValueName As String) As String
+    
+    Dim hKey As Long            'handle of opened key
+    Dim lRetVal As Long         'result of the API functions
+    Dim vValue As Variant       'setting of queried value
 
+    lRetVal = RegOpenKeyEx(lPredefinedKey, sKeyName, 0, KEY_QUERY_VALUE, hKey)
+    If lRetVal = ERROR_BADKEY Then 'Key doesnt exist
+      ' Try for the 64 bit version of the key
+      lRetVal = RegOpenKeyEx(lPredefinedKey, sKeyName, 0, KEY_QUERY_VALUE + KEY_WOW64_64KEY, hKey)
+      If lRetVal = ERROR_BADKEY Then 'Key really doesnt exist
+        xwRegQueryValue = vbNullString
+        Exit Function
+      End If
+    End If
+    Call xwRegError(lRetVal, "xwRegQueryValue")
+    lRetVal = QueryValueEx(hKey, sValueName, vValue)
+    Call xwRegError(lRetVal, "xwRegQueryValue1")
+    RegCloseKey (hKey)
+    
+    xwRegQueryValue = vValue
+End Function
+#End If
+
+
+
+
+#If VBA7 Then
+'************************************************
+' Query Registry Value
+'
+' Query the value of a registry entry.
+'
+' Version history:
+'   - 1.00 initial version
+'
+' @author
+' @version      1.00
+' @suggestions
+' @param        Long a handle to an open registry key. The key must have been opened with the KEY_QUERY_VALUE access right, or it can be one of HKEY_CLASSES_ROOT,HKEY_CURRENT_CONFIG,HKEY_CURRENT_USER,HKEY_LOCAL_MACHINE, HKEY_USERS
+' @param        String the registry name to look for
+' @param        Variant BtRef value of the entry returned after running this function
+' @return       Long ERROR_SUCCESS on success, else a system error code
+'************************************************
+Function QueryValueEx(ByVal lhKey As LongPtr, ByVal szValueName As String, vValue As Variant) As Long
+  
+  Dim cch As LongPtr, lrc As Long, lType As LongPtr, lValue As LongPtr
+  
+  Dim sValue As String
+
+  On Error GoTo QueryValueExError
+
+  ' Determine the size and type of data to be read
+  lrc = RegQueryValueExNULL(lhKey, szValueName, 0&, lType, 0&, cch)
+  If lrc <> ERROR_NONE Then GoTo QueryValueExExit
+
+  Select Case lType
+      ' For strings
+    Case REG_SZ:
+      sValue = String(CLng(cch), 0)
+
+      lrc = RegQueryValueExString(lhKey, szValueName, 0&, lType, sValue, cch)
+      If lrc = ERROR_NONE Then
+        vValue = Left$(sValue, CLng(cch) - 1)
+      Else
+        vValue = Empty
+      End If
+      ' For DWORDS
+    Case REG_DWORD:
+      lrc = RegQueryValueExLong(lhKey, szValueName, 0&, lType, lValue, cch)
+      If lrc = ERROR_NONE Then vValue = lValue
+    Case Else
+      'all other data types not supported
+      lrc = -1
+  End Select
+
+QueryValueExExit:
+  QueryValueEx = lrc
+  Exit Function
+
+QueryValueExError:
+  Resume QueryValueExExit
+End Function
+
+#Else
 '************************************************
 ' Query Registry Value
 '
@@ -132,6 +250,16 @@ QueryValueExExit:
 QueryValueExError:
   Resume QueryValueExExit
 End Function
+
+#End If
+
+
+
+
+
+
+
+
 
 '************************************************
 ' Registry Error

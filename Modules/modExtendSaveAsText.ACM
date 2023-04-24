@@ -40,7 +40,12 @@ End Type
 
 Private Const clngNOTFOUND = -2147483648#
 
+#If VBA7 Then
+Private Declare PtrSafe Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (ByVal Destination As Any, ByVal Source As Any, ByVal Length As LongPtr)
+#Else
 Private Declare Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (ByVal Destination As Any, ByVal Source As Any, ByVal Length As Long)
+#End If
+
 
 Private Sub PopulateIgnoreArr(ByRef Ignores() As Ignore)
   ReDim Ignores(1) As Ignore
